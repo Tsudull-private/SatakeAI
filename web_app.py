@@ -30,12 +30,29 @@ with open(file_path, "r", encoding="utf-8") as file:
 # 2. チャットと音声生成の裏側処理
 # ==========================================
 def chat_and_speak(user_message, history):
-    # ★ 最新Gradio仕様（辞書型）に合わせて履歴を読み込む処理
     gemini_history = []
-    for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        gemini_history.append({"role": role, "parts": [{"text": msg["content"]}]})
     
+    # ★ 2往復目以降でフリーズする原因（データ型の自動変換）を解決する安全な読み込み
+    for msg in history:
+        # 1. 1回目の辞書型の場合
+        if isinstance(msg, dict):
+            r = msg.get("role", "user")
+            c = msg.get("content", "")
+        # 2. 万が一古い形式（リスト）で来た場合の保険
+        elif isinstance(msg, (list, tuple)):
+            if len(msg) >= 2:
+                gemini_history.append({"role": "user", "parts": [{"text": str(msg[0])}]})
+                gemini_history.append({"role": "model", "parts": [{"text": str(msg[1])}]})
+            continue
+        # 3. 2回目以降の特殊なオブジェクト型（ChatMessage）で来た場合
+        else:
+            r = getattr(msg, "role", "user")
+            c = getattr(msg, "content", "")
+            
+        role = "user" if r == "user" else "model"
+        gemini_history.append({"role": role, "parts": [{"text": str(c)}]})
+    
+    # 今回のユーザーからのメッセージを追加
     gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
 
     # [A] Geminiでテキスト生成
@@ -74,7 +91,7 @@ def chat_and_speak(user_message, history):
         with open(audio_path, "wb") as f:
             f.write(f_response.read())
 
-    # ★ 最新Gradio仕様（辞書型）に合わせて履歴を追加する処理
+    # 履歴への追加
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply_text})
     
@@ -86,9 +103,8 @@ def chat_and_speak(user_message, history):
 with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     gr.Markdown("## 佐竹教授 AIチャットボット")
     
-    # type="messages" は書かない（最新版はデフォルトでこの形式になるため）
     chatbot = gr.Chatbot(label="会話", height=400)
-    audio_output = gr.Audio(label="音声", autoplay=True, visible=True)  # ★見える設定に変更
+    audio_output = gr.Audio(label="音声", autoplay=True, visible=True) 
     
     with gr.Row():
         msg = gr.Textbox(label="", placeholder="質問を入力してEnterキー...", scale=4)
@@ -98,6 +114,6 @@ with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     submit_btn.click(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
 
 if __name__ == "__main__":
-    # クラウドサーバー（Render等）の仕様に合わせた設定
+    # Render公開用の設定
     port = int(os.environ.get("PORT", 7860))
     demo.launch(server_name="0.0.0.0", server_port=port)
