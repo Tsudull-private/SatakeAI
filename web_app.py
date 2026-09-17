@@ -86,7 +86,7 @@ def chat_and_speak(user_message, history):
         # ★追加：画面の文字が透明になって消える現象を防ぐ（< > 記号を無害化）
         reply_text = reply_text.replace("<", "＜").replace(">", "＞")
     
-　　# [B] Fish Audioで音声生成
+    # [B] Fish Audioで音声生成
     audio_path = "voice_reply.wav"
     try:
         fish_data = {
