@@ -109,7 +109,49 @@ def chat_and_speak(user_message, history):
     return "", history, audio_path
 
 # ==========================================
-# 3. Web画面（UI）のレイアウト
+# 3. フィードバック送信処理
+# ==========================================
+def send_feedback(history, feedback_text):
+    if not feedback_text:
+        return "⚠️ 内容が入力されていません。", feedback_text
+    if not history:
+        return "⚠️ 会話履歴がありません。", feedback_text
+
+    # 最新のAIの発言を抽出
+    last_ai_message = "取得できませんでした"
+    for msg in reversed(history):
+        if getattr(msg, "role", "") == "assistant":
+            last_ai_message = getattr(msg, "content", "")
+            break
+        elif isinstance(msg, dict) and msg.get("role") == "assistant":
+            last_ai_message = msg.get("content", "")
+            break
+        elif isinstance(msg, (list, tuple)) and len(msg) >= 2:
+            last_ai_message = str(msg[1])
+            break
+
+    # Googleフォームへデータを送信
+    data = {
+        ENTRY_AI_TEXT: last_ai_message,
+        ENTRY_FEEDBACK: feedback_text
+    }
+    data_encoded = urllib.parse.urlencode(data).encode('utf-8')
+    req = urllib.request.Request(GOOGLE_FORM_URL, data=data_encoded, method='POST')
+
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, context=ctx) as response:
+            pass
+    except Exception:
+        # フォームの送信仕様上エラーが返る場合があるため握り潰す
+        pass
+
+    return "✅ 報告を送信しました！ご協力ありがとうございます。", ""
+
+# ==========================================
+# 4. Web画面（UI）のレイアウト
 # ==========================================
 with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     gr.Markdown("## 佐竹教授 AIチャットボット")
@@ -121,10 +163,26 @@ with gr.Blocks(title="佐竹教授 AIチャット") as demo:
         msg = gr.Textbox(label="", placeholder="質問を入力してEnterキー...", scale=4)
         submit_btn = gr.Button("送信", scale=1)
 
+    # ▼ 新規追加：違和感報告用のアコーディオン（折りたたみメニュー）▼
+    with gr.Accordion("📝 AIの回答に違和感がある場合はこちら", open=False):
+        gr.Markdown("直前の教授の回答で、事実誤認や不自然な口調があればお知らせください。")
+        with gr.Row():
+            feedback_msg = gr.Textbox(label="違和感の内容", placeholder="例：口調が若すぎる、〇〇という言葉はおかしい...など", scale=4)
+            feedback_btn = gr.Button("報告を送信", scale=1)
+        feedback_status = gr.Markdown("")
+    # ▲ 新規追加ここまで ▲
+
+    # ボタンとエンターキーの動作設定
     msg.submit(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
     submit_btn.click(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
 
+    # フィードバックボタンの動作設定
+    feedback_btn.click(
+        send_feedback,
+        inputs=[chatbot, feedback_msg],
+        outputs=[feedback_status, feedback_msg]
+    )
+
 if __name__ == "__main__":
-    # Render公開用の設定
     port = int(os.environ.get("PORT", 7860))
     demo.launch(server_name="0.0.0.0", server_port=port)
