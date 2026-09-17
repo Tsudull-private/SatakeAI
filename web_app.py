@@ -74,7 +74,10 @@ def chat_and_speak(user_message, history):
     with urllib.request.urlopen(gemini_req, context=ctx) as response:
         result = json.loads(response.read().decode('utf-8'))
         reply_text = result['candidates'][0]['content']['parts'][0]['text']
-
+        
+        # ★追加：画面の文字が透明になって消える現象を防ぐ（< > 記号を無害化）
+        reply_text = reply_text.replace("<", "＜").replace(">", "＞")
+    
     # [B] Fish Audioで音声生成
     fish_data = {
         "text": reply_text,
