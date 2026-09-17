@@ -1,0 +1,103 @@
+import urllib.request
+import json
+import os
+import ssl
+import gradio as gr
+
+# ==========================================
+# 1. APIキーの設定（★再度キーを入力してください）
+# ==========================================
+# os.getenv() を使って、Hugging Face の Secrets からキーを自動取得します
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().replace('"', '')
+FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "").strip().replace('"', '')
+FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "").strip().replace('"', '')
+
+# ==========================================
+# 2. 初期設定
+# ==========================================
+gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
+fish_tts_url = "https://api.fish.audio/v1/tts"
+
+file_path = "knowledge.txt"
+if not os.path.exists(file_path):
+    print(f"エラー: '{file_path}' が見つかりません。")
+    exit()
+
+with open(file_path, "r", encoding="utf-8") as file:
+    knowledge_text = file.read()
+
+# ==========================================
+# 2. チャットと音声生成の裏側処理
+# ==========================================
+def chat_and_speak(user_message, history):
+    # ★ 最新Gradio仕様（辞書型）に合わせて履歴を読み込む処理
+    gemini_history = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        gemini_history.append({"role": role, "parts": [{"text": msg["content"]}]})
+    
+    gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
+
+    # [A] Geminiでテキスト生成
+    gemini_data = {
+        "system_instruction": {"parts": [{"text": knowledge_text}]},
+        "contents": gemini_history,
+        "generationConfig": {"maxOutputTokens": 2048}
+    }
+    
+    req_body = json.dumps(gemini_data).encode('utf-8')
+    gemini_req = urllib.request.Request(gemini_url, data=req_body, method='POST')
+    gemini_req.add_header('Content-Type', 'application/json')
+    gemini_req.add_header('x-goog-api-key', GEMINI_API_KEY)
+    
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    with urllib.request.urlopen(gemini_req, context=ctx) as response:
+        result = json.loads(response.read().decode('utf-8'))
+        reply_text = result['candidates'][0]['content']['parts'][0]['text']
+
+    # [B] Fish Audioで音声生成
+    fish_data = {
+        "text": reply_text,
+        "reference_id": FISH_VOICE_ID,
+        "format": "wav"
+    }
+    fish_req_body = json.dumps(fish_data).encode('utf-8')
+    fish_req = urllib.request.Request(fish_tts_url, data=fish_req_body, method='POST')
+    fish_req.add_header('Authorization', f'Bearer {FISH_AUDIO_API_KEY}')
+    fish_req.add_header('Content-Type', 'application/json')
+    
+    audio_path = "voice_reply.wav"
+    with urllib.request.urlopen(fish_req, context=ctx) as f_response:
+        with open(audio_path, "wb") as f:
+            f.write(f_response.read())
+
+    # ★ 最新Gradio仕様（辞書型）に合わせて履歴を追加する処理
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": reply_text})
+    
+    return "", history, audio_path
+
+# ==========================================
+# 3. Web画面（UI）のレイアウト
+# ==========================================
+with gr.Blocks(title="佐竹教授 AIチャット") as demo:
+    gr.Markdown("## 佐竹教授 AIチャットボット")
+    
+    # type="messages" は書かない（最新版はデフォルトでこの形式になるため）
+    chatbot = gr.Chatbot(label="会話", height=400)
+    audio_output = gr.Audio(label="音声", autoplay=True, visible=True)  # ★見える設定に変更
+    
+    with gr.Row():
+        msg = gr.Textbox(label="", placeholder="質問を入力してEnterキー...", scale=4)
+        submit_btn = gr.Button("送信", scale=1)
+
+    msg.submit(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
+    submit_btn.click(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
+
+if __name__ == "__main__":
+    # クラウドサーバー（Render等）の仕様に合わせた設定
+    port = int(os.environ.get("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port)
