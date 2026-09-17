@@ -86,21 +86,29 @@ def chat_and_speak(user_message, history):
         # ★追加：画面の文字が透明になって消える現象を防ぐ（< > 記号を無害化）
         reply_text = reply_text.replace("<", "＜").replace(">", "＞")
     
-    # [B] Fish Audioで音声生成
-    fish_data = {
-        "text": reply_text,
-        "reference_id": FISH_VOICE_ID,
-        "format": "wav"
-    }
-    fish_req_body = json.dumps(fish_data).encode('utf-8')
-    fish_req = urllib.request.Request(fish_tts_url, data=fish_req_body, method='POST')
-    fish_req.add_header('Authorization', f'Bearer {FISH_AUDIO_API_KEY}')
-    fish_req.add_header('Content-Type', 'application/json')
-    
+　　# [B] Fish Audioで音声生成
     audio_path = "voice_reply.wav"
-    with urllib.request.urlopen(fish_req, context=ctx) as f_response:
-        with open(audio_path, "wb") as f:
-            f.write(f_response.read())
+    try:
+        fish_data = {
+            "text": reply_text,
+            "reference_id": FISH_VOICE_ID,
+            "format": "wav"
+        }
+        fish_req_body = json.dumps(fish_data).encode('utf-8')
+        fish_req = urllib.request.Request(fish_tts_url, data=fish_req_body, method='POST')
+        fish_req.add_header('Authorization', f'Bearer {FISH_AUDIO_API_KEY}')
+        fish_req.add_header('Content-Type', 'application/json')
+        
+        with urllib.request.urlopen(fish_req, context=ctx) as f_response:
+            with open(audio_path, "wb") as f:
+                f.write(f_response.read())
+    except Exception as e:
+        # 音声生成に失敗した場合は、強制終了せずにエラー文言をテキストに添える
+        audio_path = None
+        reply_text += "\n\n*(※現在、音声APIが制限に達しているためテキストのみでお答えしています)*"
+
+    # 履歴への追加
+    history.append({"role": "user", "content": user_message})
 
     # 履歴への追加
     history.append({"role": "user", "content": user_message})
