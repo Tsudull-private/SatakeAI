@@ -23,6 +23,14 @@ if not os.path.exists(file_path):
     print(f"エラー: '{file_path}' が見つかりません。")
     exit()
 
+# ==========================================
+# ▼ 新規追加：Googleフォーム設定（ご自身のIDに書き換えてください） ▼
+# ==========================================
+GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSeBw6WLsydkt64uYe69c6MJEUECH276jzBZWRbvijuaY4QFuQ/formResponse"
+ENTRY_AI_TEXT = "entry.2062956169" # 「AIの回答」のID
+ENTRY_FEEDBACK = "entry.1325197948" # 「違和感の内容」のID
+# ==========================================
+
 with open(file_path, "r", encoding="utf-8") as file:
     knowledge_text = file.read()
 
