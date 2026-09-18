@@ -72,9 +72,8 @@ def chat_and_speak(user_message, history):
 
     # [B] 今回のメッセージとファイルを準備
     current_parts = []
-    if user_text:
-        current_parts.append({"text": user_text})
         
+    # 1. まず添付ファイルをすべて追加する
     for filepath in files:
         if not os.path.exists(filepath):
             continue
@@ -87,6 +86,7 @@ def chat_and_speak(user_message, history):
             with open(filepath, "rb") as f:
                 b64_data = base64.b64encode(f.read()).decode('utf-8')
                 
+            # ファイルごとに独立した part として追加
             current_parts.append({
                 "inlineData": {
                     "mimeType": mime_type,
@@ -95,6 +95,10 @@ def chat_and_speak(user_message, history):
             })
         except Exception:
             continue
+
+    # 2. 最後にテキストを追加する（Geminiは「画像→テキスト」の順序を推奨しているため）
+    if user_text:
+        current_parts.append({"text": user_text})
         
     if not current_parts:
         return {"text": "", "files": []}, history, None
