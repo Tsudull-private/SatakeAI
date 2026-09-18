@@ -174,7 +174,7 @@ with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     gr.Markdown("## 佐竹教授 AIチャットボット")
     
     # ★ type="messages" を明記し、ファイル添付時の表示崩れを防止
-    chatbot = gr.Chatbot(label="会話", height=400, type="messages")
+    chatbot = gr.Chatbot(label="会話", height=400)
     audio_output = gr.Audio(label="音声", autoplay=True, visible=True) 
     
     # ★ Textbox から MultimodalTextbox に変更。標準で送信ボタンが内蔵されているため外付けのボタンは削除
