@@ -145,11 +145,11 @@ def chat_and_speak(user_message, history):
         audio_path = None
         reply_text += "\n\n*(※現在、音声APIが一時的に制限に達しているためテキストのみでお答えしています)*"
 
-    # [E] 画面の履歴（history）への反映（★Gradio 6専用フォーマットに修正）
+   # [E] 画面の履歴（history）への反映（★Gradio 6専用フォーマットに修正）
     for filepath in files:
         if os.path.exists(filepath):
-            # ファイルの表示も辞書型で返す
-            history.append({"role": "user", "content": (filepath,)})
+            # ファイルの表示も辞書型で返す（Gradio 6の仕様である gr.FileData を使用）
+            history.append({"role": "user", "content": gr.FileData(path=filepath)})
             
     # テキストの表示も辞書型で返す
     history.append({"role": "user", "content": user_text})
