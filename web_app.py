@@ -2,6 +2,8 @@ import urllib.request
 import json
 import os
 import ssl
+import base64       # ←追加（ファイル暗号化用）
+import mimetypes    # ←追加（ファイル種類判定用）
 import gradio as gr
 
 # ==========================================
