@@ -42,41 +42,60 @@ with open(file_path, "r", encoding="utf-8") as file:
 def chat_and_speak(user_message, history):
     gemini_history = []
     
-    # ★ 変更：MultimodalTextboxは辞書型 {"text": "...", "files": [...]} で届く
-    user_text = user_message.get("text", "")
-    files = user_message.get("files", [])
-
-    # [A] 過去の履歴をGemini用に変換（サーバー負荷対策で、過去のファイルは除外してテキストだけ引き継ぐ）
-    for msg in history:
-        r = msg.get("role", "user") if isinstance(msg, dict) else getattr(msg, "role", "user")
-        c = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+    # [A] 過去の履歴をGemini用に変換
+    for pair in history:
+        if not pair or len(pair) < 2:
+            continue
+        user_c, bot_c = pair[0], pair[1]
         
-        # 文字列（テキスト）の場合のみ履歴に追加し、過去の画像データは再送信しない
-        if isinstance(c, str) and c.strip():
-            role = "user" if r == "user" else "model"
-            gemini_history.append({"role": role, "parts": [{"text": str(c)}]})
+        # 過去のテキストのみをGeminiに引き継ぐ
+        if isinstance(user_c, str) and user_c.strip():
+            gemini_history.append({"role": "user", "parts": [{"text": user_c}]})
+        if isinstance(bot_c, str) and bot_c.strip():
+            gemini_history.append({"role": "model", "parts": [{"text": bot_c}]})
     
+    user_text = user_message.get("text", "")
+    raw_files = user_message.get("files", [])
+    
+    files = []
+    for f in raw_files:
+        if isinstance(f, str):
+            files.append(f)
+        elif isinstance(f, dict) and "path" in f:
+            files.append(f["path"])
+        elif hasattr(f, "path"):
+            files.append(f.path)
+
+    # ★ 今回の修正ポイント：ファイルだけ送られた場合は自動でテキストを補う
+    if files and not user_text.strip():
+        user_text = "添付ファイルを確認してください。"
+
     # [B] 今回のメッセージとファイルを準備
     current_parts = []
     if user_text:
         current_parts.append({"text": user_text})
         
     for filepath in files:
-        mime_type, _ = mimetypes.guess_type(filepath)
-        if not mime_type:
-            mime_type = "application/octet-stream"
+        if not os.path.exists(filepath):
+            continue
             
-        with open(filepath, "rb") as f:
-            b64_data = base64.b64encode(f.read()).decode('utf-8')
-            
-        current_parts.append({
-            "inlineData": {
-                "mimeType": mime_type,
-                "data": b64_data
-            }
-        })
+        try:
+            mime_type, _ = mimetypes.guess_type(filepath)
+            if not mime_type:
+                mime_type = "application/octet-stream"
+                
+            with open(filepath, "rb") as f:
+                b64_data = base64.b64encode(f.read()).decode('utf-8')
+                
+            current_parts.append({
+                "inlineData": {
+                    "mimeType": mime_type,
+                    "data": b64_data
+                }
+            })
+        except Exception:
+            continue
         
-    # ファイルもテキストもない空送信の場合は処理を中断
     if not current_parts:
         return {"text": "", "files": []}, history, None
 
@@ -121,17 +140,16 @@ def chat_and_speak(user_message, history):
                 f.write(f_response.read())
     except Exception:
         audio_path = None
-        reply_text += "\n\n*(※現在、音声APIが制限に達しているためテキストのみでお答えしています)*"
+        reply_text += "\n\n*(※現在、音声APIが一時的に制限に達しているためテキストのみでお答えしています)*"
 
     # [E] 画面の履歴（history）への反映
     for filepath in files:
-        history.append({"role": "user", "content": (filepath,)}) # 画面上にサムネイルを表示
-    if user_text:
-        history.append({"role": "user", "content": user_text})
-        
-    history.append({"role": "assistant", "content": reply_text})
+        if os.path.exists(filepath):
+            history.append([(filepath,), None])
+            
+    # テキストを必ず履歴に追加（自動補完された「添付ファイルを〜」も表示される）
+    history.append([user_text, reply_text])
     
-    # 送信後にテキストボックスと添付ファイルを空にして返す
     return {"text": "", "files": []}, history, audio_path
 
 # ==========================================
@@ -144,11 +162,9 @@ def send_feedback(history, feedback_text):
         return "⚠️ 会話履歴がありません。", feedback_text
 
     last_ai_message = "取得できませんでした"
-    for msg in reversed(history):
-        r = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-        c = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-        if r == "assistant" and isinstance(c, str):
-            last_ai_message = c
+    for pair in reversed(history):
+        if len(pair) >= 2 and isinstance(pair[1], str) and pair[1].strip():
+            last_ai_message = pair[1]
             break
 
     data = {
@@ -175,11 +191,9 @@ def send_feedback(history, feedback_text):
 with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     gr.Markdown("## 佐竹教授 AIチャットボット")
     
-    # ★ type="messages" を明記し、ファイル添付時の表示崩れを防止
     chatbot = gr.Chatbot(label="会話", height=400)
     audio_output = gr.Audio(label="音声", autoplay=True, visible=True) 
     
-    # ★ Textbox から MultimodalTextbox に変更。標準で送信ボタンが内蔵されているため外付けのボタンは削除
     msg = gr.MultimodalTextbox(label="", placeholder="質問やファイルを添付して送信...", interactive=True)
 
     with gr.Accordion("📝 AIの回答に違和感がある場合はこちら", open=False):
