@@ -40,30 +40,47 @@ with open(file_path, "r", encoding="utf-8") as file:
 def chat_and_speak(user_message, history):
     gemini_history = []
     
-    # ★ 2往復目以降でフリーズする原因（データ型の自動変換）を解決する安全な読み込み
-    for msg in history:
-        # 1. 1回目の辞書型の場合
-        if isinstance(msg, dict):
-            r = msg.get("role", "user")
-            c = msg.get("content", "")
-        # 2. 万が一古い形式（リスト）で来た場合の保険
-        elif isinstance(msg, (list, tuple)):
-            if len(msg) >= 2:
-                gemini_history.append({"role": "user", "parts": [{"text": str(msg[0])}]})
-                gemini_history.append({"role": "model", "parts": [{"text": str(msg[1])}]})
-            continue
-        # 3. 2回目以降の特殊なオブジェクト型（ChatMessage）で来た場合
-        else:
-            r = getattr(msg, "role", "user")
-            c = getattr(msg, "content", "")
-            
-        role = "user" if r == "user" else "model"
-        gemini_history.append({"role": role, "parts": [{"text": str(c)}]})
-    
-    # 今回のユーザーからのメッセージを追加
-    gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
+    # ★ 変更：MultimodalTextboxは辞書型 {"text": "...", "files": [...]} で届く
+    user_text = user_message.get("text", "")
+    files = user_message.get("files", [])
 
-    # [A] Geminiでテキスト生成
+    # [A] 過去の履歴をGemini用に変換（サーバー負荷対策で、過去のファイルは除外してテキストだけ引き継ぐ）
+    for msg in history:
+        r = msg.get("role", "user") if isinstance(msg, dict) else getattr(msg, "role", "user")
+        c = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        
+        # 文字列（テキスト）の場合のみ履歴に追加し、過去の画像データは再送信しない
+        if isinstance(c, str) and c.strip():
+            role = "user" if r == "user" else "model"
+            gemini_history.append({"role": role, "parts": [{"text": str(c)}]})
+    
+    # [B] 今回のメッセージとファイルを準備
+    current_parts = []
+    if user_text:
+        current_parts.append({"text": user_text})
+        
+    for filepath in files:
+        mime_type, _ = mimetypes.guess_type(filepath)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+            
+        with open(filepath, "rb") as f:
+            b64_data = base64.b64encode(f.read()).decode('utf-8')
+            
+        current_parts.append({
+            "inlineData": {
+                "mimeType": mime_type,
+                "data": b64_data
+            }
+        })
+        
+    # ファイルもテキストもない空送信の場合は処理を中断
+    if not current_parts:
+        return {"text": "", "files": []}, history, None
+
+    gemini_history.append({"role": "user", "parts": current_parts})
+
+    # [C] Geminiへ送信
     gemini_data = {
         "system_instruction": {"parts": [{"text": knowledge_text}]},
         "contents": gemini_history,
@@ -82,11 +99,9 @@ def chat_and_speak(user_message, history):
     with urllib.request.urlopen(gemini_req, context=ctx) as response:
         result = json.loads(response.read().decode('utf-8'))
         reply_text = result['candidates'][0]['content']['parts'][0]['text']
-        
-        # ★追加：画面の文字が透明になって消える現象を防ぐ（< > 記号を無害化）
         reply_text = reply_text.replace("<", "＜").replace(">", "＞")
-    
-    # [B] Fish Audioで音声生成
+
+    # [D] Fish Audioで音声生成
     audio_path = "voice_reply.wav"
     try:
         fish_data = {
@@ -102,19 +117,20 @@ def chat_and_speak(user_message, history):
         with urllib.request.urlopen(fish_req, context=ctx) as f_response:
             with open(audio_path, "wb") as f:
                 f.write(f_response.read())
-    except Exception as e:
-        # 音声生成に失敗した場合は、強制終了せずにエラー文言をテキストに添える
+    except Exception:
         audio_path = None
         reply_text += "\n\n*(※現在、音声APIが制限に達しているためテキストのみでお答えしています)*"
 
-    # 履歴への追加
-    history.append({"role": "user", "content": user_message})
-
-    # 履歴への追加
-    history.append({"role": "user", "content": user_message})
+    # [E] 画面の履歴（history）への反映
+    for filepath in files:
+        history.append({"role": "user", "content": (filepath,)}) # 画面上にサムネイルを表示
+    if user_text:
+        history.append({"role": "user", "content": user_text})
+        
     history.append({"role": "assistant", "content": reply_text})
     
-    return "", history, audio_path
+    # 送信後にテキストボックスと添付ファイルを空にして返す
+    return {"text": "", "files": []}, history, audio_path
 
 # ==========================================
 # 3. フィードバック送信処理
@@ -125,20 +141,14 @@ def send_feedback(history, feedback_text):
     if not history:
         return "⚠️ 会話履歴がありません。", feedback_text
 
-    # 最新のAIの発言を抽出
     last_ai_message = "取得できませんでした"
     for msg in reversed(history):
-        if getattr(msg, "role", "") == "assistant":
-            last_ai_message = getattr(msg, "content", "")
-            break
-        elif isinstance(msg, dict) and msg.get("role") == "assistant":
-            last_ai_message = msg.get("content", "")
-            break
-        elif isinstance(msg, (list, tuple)) and len(msg) >= 2:
-            last_ai_message = str(msg[1])
+        r = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
+        c = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        if r == "assistant" and isinstance(c, str):
+            last_ai_message = c
             break
 
-    # Googleフォームへデータを送信
     data = {
         ENTRY_AI_TEXT: last_ai_message,
         ENTRY_FEEDBACK: feedback_text
@@ -153,7 +163,6 @@ def send_feedback(history, feedback_text):
         with urllib.request.urlopen(req, context=ctx) as response:
             pass
     except Exception:
-        # フォームの送信仕様上エラーが返る場合があるため握り潰す
         pass
 
     return "✅ 報告を送信しました！ご協力ありがとうございます。", ""
@@ -164,27 +173,22 @@ def send_feedback(history, feedback_text):
 with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     gr.Markdown("## 佐竹教授 AIチャットボット")
     
-    chatbot = gr.Chatbot(label="会話", height=400)
+    # ★ type="messages" を明記し、ファイル添付時の表示崩れを防止
+    chatbot = gr.Chatbot(label="会話", height=400, type="messages")
     audio_output = gr.Audio(label="音声", autoplay=True, visible=True) 
     
-    with gr.Row():
-        msg = gr.Textbox(label="", placeholder="質問を入力してEnterキー...", scale=4)
-        submit_btn = gr.Button("送信", scale=1)
+    # ★ Textbox から MultimodalTextbox に変更。標準で送信ボタンが内蔵されているため外付けのボタンは削除
+    msg = gr.MultimodalTextbox(label="", placeholder="質問やファイルを添付して送信...", interactive=True)
 
-    # ▼ 新規追加：違和感報告用のアコーディオン（折りたたみメニュー）▼
     with gr.Accordion("📝 AIの回答に違和感がある場合はこちら", open=False):
         gr.Markdown("直前の教授の回答で、事実誤認や不自然な口調があればお知らせください。")
         with gr.Row():
             feedback_msg = gr.Textbox(label="違和感の内容", placeholder="例：口調が若すぎる、〇〇という言葉はおかしい...など", scale=4)
             feedback_btn = gr.Button("報告を送信", scale=1)
         feedback_status = gr.Markdown("")
-    # ▲ 新規追加ここまで ▲
 
-    # ボタンとエンターキーの動作設定
     msg.submit(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
-    submit_btn.click(chat_and_speak, inputs=[msg, chatbot], outputs=[msg, chatbot, audio_output])
-
-    # フィードバックボタンの動作設定
+    
     feedback_btn.click(
         send_feedback,
         inputs=[chatbot, feedback_msg],
