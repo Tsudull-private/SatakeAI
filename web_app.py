@@ -42,18 +42,18 @@ with open(file_path, "r", encoding="utf-8") as file:
 def chat_and_speak(user_message, history):
     gemini_history = []
     
-    # [A] 過去の履歴をGemini用に変換
-    for pair in history:
-        if not pair or len(pair) < 2:
-            continue
-        user_c, bot_c = pair[0], pair[1]
+    # [A] 過去の履歴をGemini用に変換（Gradio 6の新しい辞書型フォーマットに対応）
+    for msg in history:
+        # dict型またはオブジェクト型から role と content を取り出す
+        r = msg.get("role", "user") if isinstance(msg, dict) else getattr(msg, "role", "user")
+        c = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
         
         # 過去のテキストのみをGeminiに引き継ぐ
-        if isinstance(user_c, str) and user_c.strip():
-            gemini_history.append({"role": "user", "parts": [{"text": user_c}]})
-        if isinstance(bot_c, str) and bot_c.strip():
-            gemini_history.append({"role": "model", "parts": [{"text": bot_c}]})
+        if isinstance(c, str) and c.strip():
+            role = "user" if r == "user" else "model"
+            gemini_history.append({"role": role, "parts": [{"text": str(c)}]})
     
+    # ユーザーからの入力を取り出す
     user_text = user_message.get("text", "")
     raw_files = user_message.get("files", [])
     
@@ -66,14 +66,14 @@ def chat_and_speak(user_message, history):
         elif hasattr(f, "path"):
             files.append(f.path)
 
-    # ★ 今回の修正ポイント：ファイルだけ送られた場合は自動でテキストを補う
+    # ファイルだけ送られた場合は自動でテキストを補う
     if files and not user_text.strip():
         user_text = "添付ファイルを確認してください。"
 
     # [B] 今回のメッセージとファイルを準備
     current_parts = []
-        
-    # 1. まず添付ファイルをすべて追加する
+    
+    # 画像・ファイルを先に追加（APIの仕様遵守）
     for filepath in files:
         if not os.path.exists(filepath):
             continue
@@ -86,7 +86,6 @@ def chat_and_speak(user_message, history):
             with open(filepath, "rb") as f:
                 b64_data = base64.b64encode(f.read()).decode('utf-8')
                 
-            # ファイルごとに独立した part として追加
             current_parts.append({
                 "inlineData": {
                     "mimeType": mime_type,
@@ -95,8 +94,8 @@ def chat_and_speak(user_message, history):
             })
         except Exception:
             continue
-
-    # 2. 最後にテキストを追加する（Geminiは「画像→テキスト」の順序を推奨しているため）
+            
+    # テキストを最後に追加
     if user_text:
         current_parts.append({"text": user_text})
         
@@ -146,13 +145,15 @@ def chat_and_speak(user_message, history):
         audio_path = None
         reply_text += "\n\n*(※現在、音声APIが一時的に制限に達しているためテキストのみでお答えしています)*"
 
-    # [E] 画面の履歴（history）への反映
+    # [E] 画面の履歴（history）への反映（★Gradio 6専用フォーマットに修正）
     for filepath in files:
         if os.path.exists(filepath):
-            history.append([(filepath,), None])
+            # ファイルの表示も辞書型で返す
+            history.append({"role": "user", "content": (filepath,)})
             
-    # テキストを必ず履歴に追加（自動補完された「添付ファイルを〜」も表示される）
-    history.append([user_text, reply_text])
+    # テキストの表示も辞書型で返す
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": reply_text})
     
     return {"text": "", "files": []}, history, audio_path
 
@@ -166,9 +167,12 @@ def send_feedback(history, feedback_text):
         return "⚠️ 会話履歴がありません。", feedback_text
 
     last_ai_message = "取得できませんでした"
-    for pair in reversed(history):
-        if len(pair) >= 2 and isinstance(pair[1], str) and pair[1].strip():
-            last_ai_message = pair[1]
+    # Gradio 6の辞書型履歴から最後のボットの発言を探す
+    for msg in reversed(history):
+        r = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
+        c = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        if r == "assistant" and isinstance(c, str):
+            last_ai_message = c
             break
 
     data = {
@@ -195,6 +199,7 @@ def send_feedback(history, feedback_text):
 with gr.Blocks(title="佐竹教授 AIチャット") as demo:
     gr.Markdown("## 佐竹教授 AIチャットボット")
     
+    # type="messages"が不要になったGradio 6の書き方
     chatbot = gr.Chatbot(label="会話", height=400)
     audio_output = gr.Audio(label="音声", autoplay=True, visible=True) 
     
