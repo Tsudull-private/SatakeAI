@@ -108,6 +108,7 @@ def chat_and_speak(user_message, history):
     gemini_data = {
         "system_instruction": {"parts": [{"text": knowledge_text}]},
         "contents": gemini_history,
+        "tools": [{"google_search": {}}],  # ★この1行を追加（必要時のみ自動でWeb検索を行う）
         "generationConfig": {"maxOutputTokens": 2048}
     }
     
