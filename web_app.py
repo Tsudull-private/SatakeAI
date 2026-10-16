@@ -104,28 +104,54 @@ def chat_and_speak(user_message, history):
 
     gemini_history.append({"role": "user", "parts": current_parts})
 
-    # [C] Geminiへ送信
+# [C] Geminiへ送信（Web検索エラー時の自動切り替え＆Fish Audioトークン保護付き）
     gemini_data = {
         "system_instruction": {"parts": [{"text": knowledge_text}]},
         "contents": gemini_history,
-        "tools": [{"google_search": {}}],  # ★この1行を追加（必要時のみ自動でWeb検索を行う）
+        "tools": [{"google_search": {}}],
         "generationConfig": {"maxOutputTokens": 2048}
     }
-    
-    req_body = json.dumps(gemini_data).encode('utf-8')
-    gemini_req = urllib.request.Request(gemini_url, data=req_body, method='POST')
-    gemini_req.add_header('Content-Type', 'application/json')
-    gemini_req.add_header('x-goog-api-key', GEMINI_API_KEY)
     
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    with urllib.request.urlopen(gemini_req, context=ctx) as response:
-        result = json.loads(response.read().decode('utf-8'))
-        reply_text = result['candidates'][0]['content']['parts'][0]['text']
-        reply_text = reply_text.replace("<", "＜").replace(">", "＞")
+    def call_gemini(payload):
+        req_body = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(gemini_url, data=req_body, method='POST')
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('x-goog-api-key', GEMINI_API_KEY)
+        with urllib.request.urlopen(req, context=ctx) as response:
+            return json.loads(response.read().decode('utf-8'))
 
+    try:
+        # 1. まずはWeb検索（google_search）ありで送信
+        result = call_gemini(gemini_data)
+    except urllib.error.HTTPError as e:
+        # Web検索の制限（429や400）で弾かれた場合、Web検索を外して通常モードで即座に再試行
+        if e.code in (400, 403, 429):
+            try:
+                gemini_data.pop("tools", None)
+                result = call_gemini(gemini_data)
+            except urllib.error.HTTPError as e2:
+                err_detail = e2.read().decode('utf-8', errors='ignore')
+                err_msg = f"⚠️ Gemini APIの上限に達しています (HTTP {e2.code})。\n【Googleからの詳細メッセージ】\n{err_detail}"
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": err_msg})
+                # ★エラー時はFish Audioを呼ばずにここで終了（音声トークンを消費しない）
+                return {"text": "", "files": []}, history, None
+        else:
+            err_detail = e.read().decode('utf-8', errors='ignore')
+            err_msg = f"⚠️ Gemini APIエラー (HTTP {e.code}):\n{err_detail}"
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": err_msg})
+            return {"text": "", "files": []}, history, None
+
+    # 複数のテキストパーツが返ってきた場合も安全に結合する
+    parts = result['candidates'][0]['content'].get('parts', [])
+    reply_text = "".join(p.get('text', '') for p in parts if 'text' in p)
+    reply_text = reply_text.replace("<", "＜").replace(">", "＞")
+    
     # [D] Fish Audioで音声生成
     audio_path = "voice_reply.wav"
     try:
