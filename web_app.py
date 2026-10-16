@@ -104,50 +104,63 @@ def chat_and_speak(user_message, history):
 
     gemini_history.append({"role": "user", "parts": current_parts})
 
-# [C] Geminiへ送信（Web検索エラー時の自動切り替え＆Fish Audioトークン保護付き）
-    gemini_data = {
-        "system_instruction": {"parts": [{"text": knowledge_text}]},
-        "contents": gemini_history,
-        "tools": [{"google_search": {}}],
-        "generationConfig": {"maxOutputTokens": 2048}
-    }
-    
+# [C] Geminiへ送信（複数モデルの自動迂回＆Web検索フォールバック付き）
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    def call_gemini(payload):
-        req_body = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(gemini_url, data=req_body, method='POST')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('x-goog-api-key', GEMINI_API_KEY)
-        with urllib.request.urlopen(req, context=ctx) as response:
-            return json.loads(response.read().decode('utf-8'))
+    # 混雑(503)や制限(429)の際に、上から順番に自動切り替えするモデルのリスト
+    model_candidates = [
+        "gemini-3.6-flash",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+    ]
 
-    try:
-        # 1. まずはWeb検索（google_search）ありで送信
-        result = call_gemini(gemini_data)
-    except urllib.error.HTTPError as e:
-        # Web検索の制限（429や400）で弾かれた場合、Web検索を外して通常モードで即座に再試行
-        if e.code in (400, 403, 429):
+    result = None
+    last_error_code = None
+    last_error_detail = ""
+
+    for model_name in model_candidates:
+        target_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        
+        # 1. まず「Web検索あり」を試し、制限されたら「Web検索なし」を試す
+        for use_search in (True, False):
+            gemini_data = {
+                "system_instruction": {"parts": [{"text": knowledge_text}]},
+                "contents": gemini_history,
+                "generationConfig": {"maxOutputTokens": 2048}
+            }
+            if use_search:
+                gemini_data["tools"] = [{"google_search": {}}]
+
             try:
-                gemini_data.pop("tools", None)
-                result = call_gemini(gemini_data)
-            except urllib.error.HTTPError as e2:
-                err_detail = e2.read().decode('utf-8', errors='ignore')
-                err_msg = f"⚠️ Gemini APIの上限に達しています (HTTP {e2.code})。\n【Googleからの詳細メッセージ】\n{err_detail}"
-                history.append({"role": "user", "content": user_text})
-                history.append({"role": "assistant", "content": err_msg})
-                # ★エラー時はFish Audioを呼ばずにここで終了（音声トークンを消費しない）
-                return {"text": "", "files": []}, history, None
-        else:
-            err_detail = e.read().decode('utf-8', errors='ignore')
-            err_msg = f"⚠️ Gemini APIエラー (HTTP {e.code}):\n{err_detail}"
-            history.append({"role": "user", "content": user_text})
-            history.append({"role": "assistant", "content": err_msg})
-            return {"text": "", "files": []}, history, None
+                req_body = json.dumps(gemini_data).encode('utf-8')
+                req = urllib.request.Request(target_url, data=req_body, method='POST')
+                req.add_header('Content-Type', 'application/json')
+                req.add_header('x-goog-api-key', GEMINI_API_KEY)
+                with urllib.request.urlopen(req, context=ctx) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+                break  # 通信成功したらループを抜ける
+            except urllib.error.HTTPError as e:
+                last_error_code = e.code
+                last_error_detail = e.read().decode('utf-8', errors='ignore')
+                # 503（モデル自体の混雑）の場合は、検索を外しても同じなので即座に次のモデルへ切り替える
+                if e.code == 503:
+                    break
+                continue
+        
+        if result is not None:
+            break
 
-    # 複数のテキストパーツが返ってきた場合も安全に結合する
+    # すべての予備モデルでも失敗した場合のみエラーを表示（Fish Audioのトークンは消費しない）
+    if result is None:
+        err_msg = f"⚠️ Gemini APIが現在すべて混雑・上限に達しています (HTTP {last_error_code})。\n【詳細】\n{last_error_detail}"
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": err_msg})
+        return {"text": "", "files": []}, history, None
+
+    # 回答テキストを安全に取り出す
     parts = result['candidates'][0]['content'].get('parts', [])
     reply_text = "".join(p.get('text', '') for p in parts if 'text' in p)
     reply_text = reply_text.replace("<", "＜").replace(">", "＞")
